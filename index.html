@@ -1,9 +1,10 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#102a43">
+  <meta name="description" content="Order campus food online with Smart Canteen. Explore the menu, manage your cart, and skip long queues.">
   <title>Smart Canteen | Online Food Ordering</title>
 
   <style>
@@ -38,6 +39,10 @@
       color: #cbd5e1;
       margin-top: 5px;
       font-size: 14px;
+    }
+
+    button {
+      font-family: inherit;
     }
 
     .cart-button {
@@ -178,6 +183,11 @@
       background: #115e59;
     }
 
+    button:focus-visible {
+      outline: 3px solid #f59e0b;
+      outline-offset: 3px;
+    }
+
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
@@ -219,8 +229,8 @@
     }
 
     .quantity-controls button {
-      width: 30px;
-      height: 30px;
+      width: 34px;
+      height: 34px;
       border: none;
       border-radius: 6px;
       background: #e2e8f0;
@@ -280,7 +290,7 @@
       <p>Campus food ordering made easy</p>
     </div>
 
-    <button class="cart-button" onclick="toggleCart()">
+    <button class="cart-button" id="cartToggle" type="button">
       🛒 Cart (<span id="cartCount">0</span>)
     </button>
   </header>
@@ -299,8 +309,8 @@
       <p>Fresh food at student-friendly prices</p>
     </div>
 
-    <p id="menuMessage">Loading menu...</p>
-    <section class="menu-grid" id="menuGrid"></section>
+    <p id="menuMessage" role="status" aria-live="polite">Loading menu...</p>
+    <section class="menu-grid" id="menuGrid" aria-label="Food menu"></section>
 
     <section class="cart-section" id="cartSection">
       <h2>🛒 Your Cart</h2>
@@ -309,7 +319,7 @@
 
       <div class="cart-total">
         <h3>Total: ₹<span id="cartTotal">0.00</span></h3>
-        <button class="place-button" onclick="placeOrder()">
+        <button class="place-button" id="placeOrderButton" type="button">
           Place Order
         </button>
       </div>
@@ -323,8 +333,12 @@
   <script>
     let menuItems = [];
     let cart = [];
+    let isPlacingOrder = false;
 
-    const API_URL = "http://localhost:5000";
+    const API_URL = window.location.protocol === "file:"
+      || ["localhost", "127.0.0.1"].includes(window.location.hostname)
+      ? "http://localhost:5000"
+      : "";
 
     const foodEmojis = {
       Meals: "🍛",
@@ -332,19 +346,38 @@
       Drinks: "☕"
     };
 
-    async function loadMenu() {
-      const message = document.getElementById("menuMessage");
-      const grid = document.getElementById("menuGrid");
+    const menuMessage = document.getElementById("menuMessage");
+    const menuGrid = document.getElementById("menuGrid");
+    const cartSection = document.getElementById("cartSection");
+    const cartItemsContainer = document.getElementById("cartItems");
+    const cartCount = document.getElementById("cartCount");
+    const cartTotal = document.getElementById("cartTotal");
+    const placeOrderButton = document.getElementById("placeOrderButton");
 
-      message.textContent = "Loading menu...";
+    async function apiRequest(path, options = {}) {
+      const response = await fetch(`${API_URL}${path}`, {
+        ...options,
+        headers: {
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...options.headers
+        }
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.message || "The request could not be completed.");
+      }
+
+      return result;
+    }
+
+    async function loadMenu() {
+      menuMessage.textContent = "Loading menu...";
+      menuGrid.replaceChildren();
 
       try {
-        const response = await fetch(`${API_URL}/api/menu`);
-        const result = await response.json();
-
-        if (!response.ok) {
-          throw new Error(result.message || "Unable to load menu.");
-        }
+        const result = await apiRequest("/api/menu");
 
         menuItems = Array.isArray(result)
           ? result
@@ -354,22 +387,18 @@
 
         renderMenu();
 
-        message.textContent = menuItems.length
+        menuMessage.textContent = menuItems.length
           ? ""
           : "No food items are currently available.";
       } catch (error) {
         console.error("Menu loading error:", error);
-
-        message.textContent =
-          "Unable to load the menu. Please check the backend server.";
-
-        grid.innerHTML = "";
+        menuMessage.textContent =
+          "Unable to load the menu. Please try again later.";
       }
     }
 
     function renderMenu() {
-      const grid = document.getElementById("menuGrid");
-      grid.innerHTML = "";
+      menuGrid.replaceChildren();
 
       menuItems.forEach(item => {
         const card = document.createElement("article");
@@ -381,7 +410,8 @@
         if (item.image_url) {
           const img = document.createElement("img");
           img.src = item.image_url;
-          img.alt = item.name;
+          img.alt = item.name || "Food item";
+          img.loading = "lazy";
 
           img.onerror = () => {
             img.remove();
@@ -401,7 +431,7 @@
         category.textContent = item.category || "Food";
 
         const name = document.createElement("h3");
-        name.textContent = item.name;
+        name.textContent = item.name || "Food item";
 
         const description = document.createElement("p");
         description.className = "description";
@@ -413,17 +443,23 @@
 
         const price = document.createElement("span");
         price.className = "price";
-        price.textContent = "₹" + Number(item.price).toFixed(2);
+
+        const numericPrice = Number(item.price);
+        price.textContent = Number.isFinite(numericPrice)
+          ? "₹" + numericPrice.toFixed(2)
+          : "Price unavailable";
 
         const button = document.createElement("button");
         button.className = "add-button";
+        button.type = "button";
         button.textContent = "Add +";
+        button.disabled = !Number.isFinite(numericPrice) || numericPrice < 0;
         button.onclick = () => addToCart(item.id);
 
         bottom.append(price, button);
         content.append(category, name, description, bottom);
         card.append(image, content);
-        grid.appendChild(card);
+        menuGrid.appendChild(card);
       });
     }
 
@@ -432,7 +468,7 @@
         food => Number(food.id) === Number(itemId)
       );
 
-      if (!item) {
+      if (!item || !Number.isFinite(Number(item.price))) {
         alert("This food item is unavailable.");
         return;
       }
@@ -456,29 +492,21 @@
     }
 
     function changeQuantity(itemId, change) {
-      const item = cart.find(
-        food => food.id === Number(itemId)
-      );
+      const item = cart.find(food => food.id === Number(itemId));
 
       if (!item) return;
 
       item.quantity += change;
 
       if (item.quantity <= 0) {
-        cart = cart.filter(
-          food => food.id !== Number(itemId)
-        );
+        cart = cart.filter(food => food.id !== Number(itemId));
       }
 
       renderCart();
     }
 
     function renderCart() {
-      const container = document.getElementById("cartItems");
-      const count = document.getElementById("cartCount");
-      const totalElement = document.getElementById("cartTotal");
-
-      container.innerHTML = "";
+      cartItemsContainer.replaceChildren();
 
       const itemCount = cart.reduce(
         (sum, item) => sum + item.quantity,
@@ -490,60 +518,64 @@
         0
       );
 
-      count.textContent = itemCount;
-      totalElement.textContent = total.toFixed(2);
+      cartCount.textContent = itemCount;
+      cartTotal.textContent = total.toFixed(2);
 
       if (cart.length === 0) {
-        container.innerHTML =
-          '<p class="empty-cart">Your cart is empty. Add some food first!</p>';
-      } else {
-        cart.forEach(item => {
-          const row = document.createElement("div");
-          row.className = "cart-item";
-
-          const details = document.createElement("div");
-
-          const name = document.createElement("strong");
-          name.textContent = item.name;
-
-          const subtotal = document.createElement("p");
-          subtotal.textContent =
-            "₹" + (item.price * item.quantity).toFixed(2);
-
-          details.append(name, subtotal);
-
-          const controls = document.createElement("div");
-          controls.className = "quantity-controls";
-
-          const minus = document.createElement("button");
-          minus.textContent = "−";
-          minus.setAttribute("aria-label", "Decrease " + item.name);
-          minus.onclick = () => changeQuantity(item.id, -1);
-
-          const quantity = document.createElement("span");
-          quantity.textContent = item.quantity;
-
-          const plus = document.createElement("button");
-          plus.textContent = "+";
-          plus.setAttribute("aria-label", "Increase " + item.name);
-          plus.onclick = () => changeQuantity(item.id, 1);
-
-          controls.append(minus, quantity, plus);
-          row.append(details, controls);
-          container.appendChild(row);
-        });
+        const empty = document.createElement("p");
+        empty.className = "empty-cart";
+        empty.textContent = "Your cart is empty. Add some food first!";
+        cartItemsContainer.appendChild(empty);
+        return;
       }
+
+      cart.forEach(item => {
+        const row = document.createElement("div");
+        row.className = "cart-item";
+
+        const details = document.createElement("div");
+
+        const name = document.createElement("strong");
+        name.textContent = item.name;
+
+        const subtotal = document.createElement("p");
+        subtotal.textContent =
+          "₹" + (item.price * item.quantity).toFixed(2);
+
+        details.append(name, subtotal);
+
+        const controls = document.createElement("div");
+        controls.className = "quantity-controls";
+
+        const minus = document.createElement("button");
+        minus.type = "button";
+        minus.textContent = "−";
+        minus.setAttribute("aria-label", "Decrease " + item.name);
+        minus.onclick = () => changeQuantity(item.id, -1);
+
+        const quantity = document.createElement("span");
+        quantity.textContent = item.quantity;
+
+        const plus = document.createElement("button");
+        plus.type = "button";
+        plus.textContent = "+";
+        plus.setAttribute("aria-label", "Increase " + item.name);
+        plus.onclick = () => changeQuantity(item.id, 1);
+
+        controls.append(minus, quantity, plus);
+        row.append(details, controls);
+        cartItemsContainer.appendChild(row);
+      });
     }
 
     function toggleCart() {
-      const section = document.getElementById("cartSection");
+      const isVisible = cartSection.style.display === "block";
 
-      section.style.display =
-        section.style.display === "block" ? "none" : "block";
+      cartSection.style.display = isVisible ? "none" : "block";
 
-      if (section.style.display === "block") {
+      if (!isVisible) {
         renderCart();
-        section.scrollIntoView({
+        cartSection.scrollIntoView({
           behavior: "smooth",
           block: "start"
         });
@@ -551,6 +583,8 @@
     }
 
     async function placeOrder() {
+      if (isPlacingOrder) return;
+
       if (cart.length === 0) {
         alert("Please add food items to your cart first.");
         return;
@@ -565,58 +599,52 @@
         return;
       }
 
-      const orderButton = document.querySelector(".place-button");
-
-      const total = cart.reduce(
-        (sum, item) => sum + item.price * item.quantity,
-        0
-      );
-
-      orderButton.disabled = true;
-      orderButton.textContent = "Placing order...";
+      isPlacingOrder = true;
+      placeOrderButton.disabled = true;
+      placeOrderButton.textContent = "Placing order...";
 
       try {
-        const response = await fetch(`${API_URL}/api/orders`, {
+        const result = await apiRequest("/api/orders", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
           body: JSON.stringify({
             customer_name: customerName.trim(),
             items: cart.map(item => ({
               id: item.id,
               quantity: item.quantity
-            })),
-            total_amount: total
+            }))
           })
         });
 
-        const result = await response.json();
-
-        if (!response.ok || !result.success) {
-          alert(result.message || "Unable to place your order.");
-          return;
+        if (result.success !== true || !result.orderId) {
+          throw new Error(result.message || "Unable to place your order.");
         }
+
+        const orderId = result.orderId;
 
         alert(
           "Order placed successfully!\n\n" +
-          "Order ID: " + result.orderId + "\n" +
-          "Customer: " + customerName.trim() + "\n" +
-          "Total: ₹" + total.toFixed(2)
+          "Order ID: " + orderId + "\n" +
+          "Customer: " + customerName.trim() + "\n\n" +
+          "Please pay at the canteen counter if payment has not been collected."
         );
 
         cart = [];
         renderCart();
-        document.getElementById("cartSection").style.display = "none";
+        cartSection.style.display = "none";
       } catch (error) {
         console.error("Order error:", error);
-        alert("Could not connect to the server. Please try again.");
+        alert(error.message || "Could not connect to the server. Please try again.");
       } finally {
-        orderButton.disabled = false;
-        orderButton.textContent = "Place Order";
+        isPlacingOrder = false;
+        placeOrderButton.disabled = false;
+        placeOrderButton.textContent = "Place Order";
       }
     }
 
+    document.getElementById("cartToggle").addEventListener("click", toggleCart);
+    placeOrderButton.addEventListener("click", placeOrder);
+
+    renderCart();
     loadMenu();
   </script>
 </body>
