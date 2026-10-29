@@ -1,4 +1,4 @@
-
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7,6 +7,7 @@
   <title>Smart Canteen | Admin</title>
   <style>
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       font-family: Arial, sans-serif;
@@ -14,6 +15,7 @@
       color: #eef2ff;
       min-height: 100vh;
     }
+
     header {
       padding: 22px 6%;
       background: #121a2e;
@@ -24,9 +26,11 @@
       gap: 16px;
       flex-wrap: wrap;
     }
+
     h1 { margin: 0; font-size: 24px; }
     .muted { color: #a6b2ca; }
     main { max-width: 1100px; margin: 35px auto; padding: 0 18px; }
+
     .panel {
       background: #121a2e;
       border: 1px solid #26324c;
@@ -34,9 +38,11 @@
       padding: 24px;
       margin-bottom: 22px;
     }
+
     .login-panel { max-width: 430px; margin: 55px auto; }
     h2 { margin-top: 0; }
     label { display: block; margin: 15px 0 7px; color: #cbd5e1; }
+
     input {
       width: 100%;
       padding: 13px;
@@ -46,6 +52,7 @@
       color: white;
       font-size: 16px;
     }
+
     button {
       padding: 11px 15px;
       border: 0;
@@ -55,19 +62,23 @@
       font-weight: bold;
       cursor: pointer;
     }
+
     button:hover { opacity: .88; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
     .primary { width: 100%; margin-top: 20px; padding: 13px; }
     .logout { background: #334155; }
     .message { margin-top: 14px; color: #fca5a5; overflow-wrap: anywhere; }
     .success { color: #86efac; }
     .hidden { display: none !important; }
     .orders { display: grid; gap: 15px; }
+
     .order {
       padding: 18px;
       border: 1px solid #34425e;
       border-radius: 12px;
       background: #0e1629;
     }
+
     .order-top {
       display: flex;
       justify-content: space-between;
@@ -75,8 +86,10 @@
       gap: 12px;
       flex-wrap: wrap;
     }
+
     .items { line-height: 1.8; color: #cbd5e1; }
     .status-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px; }
+
     select {
       padding: 10px;
       border-radius: 8px;
@@ -84,7 +97,7 @@
       border: 1px solid #34425e;
       color: white;
     }
-    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
     @media (max-width: 600px) {
       header { padding: 18px; }
       main { margin-top: 20px; }
@@ -116,7 +129,7 @@
                autocomplete="current-password" required>
 
         <button class="primary" id="loginBtn" type="submit">Sign in</button>
-        <div id="loginMessage" class="message" role="status"></div>
+        <div id="loginMessage" class="message" role="status" aria-live="polite"></div>
       </form>
     </section>
 
@@ -129,14 +142,20 @@
           </div>
           <button id="refreshBtn" type="button">Refresh orders</button>
         </div>
-        <div id="dashboardMessage" class="message" role="status"></div>
+        <div id="dashboardMessage" class="message" role="status" aria-live="polite"></div>
       </div>
       <div id="orders" class="orders"></div>
     </section>
   </main>
 
   <script>
-    const API = "http://localhost:5000";
+    const API = (
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1"
+    )
+      ? "http://localhost:5000"
+      : "https://YOUR-RENDER-BACKEND-URL";
+
     const TOKEN_KEY = "smartCanteenAdminToken";
 
     const loginPanel = document.getElementById("loginPanel");
@@ -147,6 +166,7 @@
     const dashboardMessage = document.getElementById("dashboardMessage");
     const ordersContainer = document.getElementById("orders");
     const logoutBtn = document.getElementById("logoutBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
 
     let token = sessionStorage.getItem(TOKEN_KEY);
 
@@ -157,6 +177,7 @@
       dashboard.classList.add("hidden");
       logoutBtn.classList.add("hidden");
       loginMessage.textContent = message;
+      loginMessage.classList.remove("success");
       ordersContainer.replaceChildren();
     }
 
@@ -192,6 +213,7 @@
     loginForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       loginMessage.textContent = "";
+      loginMessage.classList.remove("success");
       loginBtn.disabled = true;
       loginBtn.textContent = "Signing in...";
 
@@ -226,7 +248,9 @@
 
     async function loadOrders() {
       dashboardMessage.textContent = "Loading orders...";
+      dashboardMessage.classList.remove("success");
       ordersContainer.replaceChildren();
+      refreshBtn.disabled = true;
 
       try {
         const data = await apiRequest("/api/admin/orders");
@@ -254,18 +278,21 @@
           const heading = document.createElement("div");
           const title = document.createElement("h3");
           title.textContent = "Order #" + order.id;
+
           const customer = document.createElement("p");
           customer.className = "muted";
           customer.textContent =
             "Customer: " + (order.customer_name || order.customer || "N/A");
+
           heading.append(title, customer);
 
           const status = document.createElement("strong");
           status.textContent = "Status: " + (order.status || "Pending");
+
           top.append(heading, status);
           card.append(top);
 
-          if (order.items) {
+          if (order.items != null) {
             const items = document.createElement("p");
             items.className = "items";
             items.textContent = "Items: " + (
@@ -286,33 +313,51 @@
           row.className = "status-row";
 
           const select = document.createElement("select");
+          select.setAttribute("aria-label", "Status for order " + order.id);
+
           ["Pending", "Preparing", "Ready", "Completed", "Cancelled"]
             .forEach((value) => {
               const option = document.createElement("option");
               option.value = value;
               option.textContent = value;
-              if (String(order.status || "Pending").toLowerCase() === value.toLowerCase()) {
+
+              if (
+                String(order.status || "Pending").toLowerCase() ===
+                value.toLowerCase()
+              ) {
                 option.selected = true;
               }
+
               select.append(option);
             });
 
           const update = document.createElement("button");
           update.type = "button";
           update.textContent = "Update status";
+
           update.addEventListener("click", async () => {
             update.disabled = true;
+            dashboardMessage.textContent = "Updating order status...";
+            dashboardMessage.classList.remove("success");
+
             try {
-              await apiRequest("/api/admin/orders/" + encodeURIComponent(order.id) + "/status", {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ status: select.value })
-              });
+              await apiRequest(
+                "/api/admin/orders/" +
+                encodeURIComponent(order.id) +
+                "/status",
+                {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: select.value })
+                }
+              );
+
               dashboardMessage.textContent = "Order status updated.";
               dashboardMessage.classList.add("success");
               await loadOrders();
             } catch (error) {
-              dashboardMessage.textContent = error.message;
+              dashboardMessage.textContent =
+                error.message || "Could not update order status.";
               dashboardMessage.classList.remove("success");
             } finally {
               update.disabled = false;
@@ -324,12 +369,15 @@
           ordersContainer.append(card);
         });
       } catch (error) {
-        dashboardMessage.textContent = error.message || "Unable to load orders.";
+        dashboardMessage.textContent =
+          error.message || "Unable to load orders.";
         dashboardMessage.classList.remove("success");
+      } finally {
+        refreshBtn.disabled = false;
       }
     }
 
-    document.getElementById("refreshBtn").addEventListener("click", loadOrders);
+    refreshBtn.addEventListener("click", loadOrders);
 
     logoutBtn.addEventListener("click", () => {
       showLogin("You have been logged out.");
@@ -344,3 +392,4 @@
   </script>
 </body>
 </html>
+```
