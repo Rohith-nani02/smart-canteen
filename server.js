@@ -10,44 +10,49 @@ const db = require("./db");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Validate JWT secret.
 if (
   !process.env.JWT_SECRET ||
   process.env.JWT_SECRET.length < 32 ||
   process.env.JWT_SECRET === "replace_this_with_a_long_random_secret" ||
   process.env.JWT_SECRET.includes("PASTE_")
 ) {
-  console.error(
-    "Please configure a valid JWT_SECRET in D:\\smart-canteen\\backend\\.env"
-  );
+  console.error("Please configure a valid JWT_SECRET environment variable.");
   process.exit(1);
 }
 
-// CORS configuration.
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+  "http://localhost:5501",
+  "http://127.0.0.1:5501",
+  ...(process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map((url) => url.trim())
+    : [])
+];
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "http://localhost:5500",
-      "http://127.0.0.1:5500",
-      "http://localhost:5501",
-      "http://127.0.0.1:5501"
-    ],
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origin not allowed by CORS."));
+    },
     methods: ["GET", "POST", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
 
-// Log unexpected request-processing errors.
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path}`);
   next();
 });
 
-// Health check.
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -55,34 +60,21 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Get all menu items.
 app.get("/api/menu", (req, res) => {
-  console.log("Menu request received.");
+  db.query("SELECT * FROM menu_items ORDER BY id ASC", (err, results) => {
+    if (err) {
+      console.error("Menu database error:", err.code);
 
-  db.query(
-    "SELECT * FROM menu_items ORDER BY id ASC",
-    (err, results) => {
-      if (err) {
-        console.error("MENU DATABASE ERROR");
-        console.error("Error code:", err.code);
-        console.error("Error message:", err.message);
-        console.error("SQL message:", err.sqlMessage);
-
-        return res.status(500).json({
-          success: false,
-          message: "Could not load menu.",
-          errorCode: err.code || "DATABASE_ERROR"
-        });
-      }
-
-      console.log(`Menu loaded successfully: ${results.length} items.`);
-
-      return res.json(results);
+      return res.status(500).json({
+        success: false,
+        message: "Could not load menu."
+      });
     }
-  );
+
+    return res.json(results);
+  });
 });
 
-// Create a customer order.
 app.post("/api/orders", (req, res) => {
   const { customer_name, items, total_amount } = req.body || {};
 
@@ -91,6 +83,7 @@ app.post("/api/orders", (req, res) => {
     !customer_name.trim() ||
     !Array.isArray(items) ||
     items.length === 0 ||
+    items.length > 50 ||
     !Number.isFinite(Number(total_amount)) ||
     Number(total_amount) <= 0
   ) {
@@ -105,7 +98,8 @@ app.post("/api/orders", (req, res) => {
       Number.isInteger(Number(item.id)) &&
       Number(item.id) > 0 &&
       Number.isInteger(Number(item.quantity)) &&
-      Number(item.quantity) > 0
+      Number(item.quantity) > 0 &&
+      Number(item.quantity) <= 100
   );
 
   if (!validItems) {
@@ -114,54 +108,125 @@ app.post("/api/orders", (req, res) => {
     });
   }
 
+  const menuIds = [...new Set(items.map((item) => Number(item.id)))];
+  const placeholders = menuIds.map(() => "?").join(", ");
+
   db.query(
-    "INSERT INTO orders (customer_name, total_amount, status) VALUES (?, ?, ?)",
-    [customer_name.trim(), Number(total_amount), "Pending"],
-    (err, result) => {
-      if (err) {
-        console.error("Order creation failed:", err.message);
+    `SELECT id, price FROM menu_items WHERE id IN (${placeholders})`,
+    menuIds,
+    (menuErr, menuRows) => {
+      if (menuErr) {
+        console.error("Menu validation failed:", menuErr.code);
 
         return res.status(500).json({
-          message: "Could not create order."
+          message: "Could not validate order items."
         });
       }
 
-      const orderId = result.insertId;
+      const menuMap = new Map(menuRows.map((item) => [item.id, Number(item.price)]));
 
-      const orderItems = items.map((item) => [
-        orderId,
-        Number(item.id),
-        Number(item.quantity)
-      ]);
+      if (menuMap.size !== menuIds.length) {
+        return res.status(400).json({
+          message: "One or more menu items do not exist."
+        });
+      }
 
-      db.query(
-        "INSERT INTO order_items (order_id, menu_item_id, quantity) VALUES ?",
-        [orderItems],
-        (itemErr) => {
-          if (itemErr) {
-            console.error(
-              "Order items creation failed:",
-              itemErr.message
-            );
+      const calculatedTotal = items.reduce(
+        (sum, item) =>
+          sum + menuMap.get(Number(item.id)) * Number(item.quantity),
+        0
+      );
+
+      if (
+        !Number.isFinite(calculatedTotal) ||
+        Math.abs(calculatedTotal - Number(total_amount)) > 0.01
+      ) {
+        return res.status(400).json({
+          message: "Order total does not match menu prices."
+        });
+      }
+
+      db.getConnection((connectionErr, connection) => {
+        if (connectionErr) {
+          console.error("Order database connection failed.");
+
+          return res.status(500).json({
+            message: "Could not place order."
+          });
+        }
+
+        connection.beginTransaction((transactionErr) => {
+          if (transactionErr) {
+            connection.release();
 
             return res.status(500).json({
-              message: "Order was created, but its items could not be saved.",
-              orderId
+              message: "Could not start order transaction."
             });
           }
 
-          return res.status(201).json({
-            success: true,
-            message: "Order placed successfully!",
-            orderId
-          });
-        }
-      );
+          connection.query(
+            "INSERT INTO orders (customer_name, total_amount, status) VALUES (?, ?, ?)",
+            [customer_name.trim(), calculatedTotal, "Pending"],
+            (orderErr, result) => {
+              if (orderErr) {
+                return connection.rollback(() => {
+                  connection.release();
+
+                  res.status(500).json({
+                    message: "Could not create order."
+                  });
+                });
+              }
+
+              const orderItems = items.map((item) => [
+                result.insertId,
+                Number(item.id),
+                Number(item.quantity)
+              ]);
+
+              connection.query(
+                "INSERT INTO order_items (order_id, menu_item_id, quantity) VALUES ?",
+                [orderItems],
+                (itemsErr) => {
+                  if (itemsErr) {
+                    return connection.rollback(() => {
+                      connection.release();
+
+                      res.status(500).json({
+                        message: "Could not save order items."
+                      });
+                    });
+                  }
+
+                  connection.commit((commitErr) => {
+                    if (commitErr) {
+                      return connection.rollback(() => {
+                        connection.release();
+
+                        res.status(500).json({
+                          message: "Could not finalize order."
+                        });
+                      });
+                    }
+
+                    connection.release();
+
+                    return res.status(201).json({
+                      success: true,
+                      message: "Order placed successfully!",
+                      orderId: result.insertId
+                    });
+                  });
+                }
+              );
+            }
+          );
+        });
+      });
     }
   );
 });
 
-// Admin login.
 app.post("/api/admin/login", (req, res) => {
   const { username, password } = req.body || {};
 
@@ -181,7 +246,7 @@ app.post("/api/admin/login", (req, res) => {
     [username.trim()],
     async (err, results) => {
       if (err) {
-        console.error("Admin login database error:", err.message);
+        console.error("Admin login database error:", err.code);
 
         return res.status(500).json({
           message: "Login service unavailable."
@@ -196,11 +261,7 @@ app.post("/api/admin/login", (req, res) => {
 
       try {
         const admin = results[0];
-
-        const matches = await bcrypt.compare(
-          password,
-          admin.password_hash
-        );
+        const matches = await bcrypt.compare(password, admin.password_hash);
 
         if (!matches) {
           return res.status(401).json({
@@ -234,7 +295,6 @@ app.post("/api/admin/login", (req, res) => {
   );
 });
 
-// Protect admin-only endpoints.
 function requireAdmin(req, res, next) {
   const authorization = req.headers.authorization || "";
   const parts = authorization.split(" ");
@@ -250,10 +310,7 @@ function requireAdmin(req, res, next) {
   }
 
   try {
-    const decoded = jwt.verify(
-      parts[1],
-      process.env.JWT_SECRET
-    );
+    const decoded = jwt.verify(parts[1], process.env.JWT_SECRET);
 
     if (decoded.role !== "admin" || !decoded.adminId) {
       return res.status(403).json({
@@ -270,7 +327,6 @@ function requireAdmin(req, res, next) {
   }
 }
 
-// Get orders for the admin dashboard.
 app.get("/api/admin/orders", requireAdmin, (req, res) => {
   const query = `
     SELECT
@@ -291,7 +347,7 @@ app.get("/api/admin/orders", requireAdmin, (req, res) => {
 
   db.query(query, (err, results) => {
     if (err) {
-      console.error("Admin orders query failed:", err.message);
+      console.error("Admin orders query failed:", err.code);
 
       return res.status(500).json({
         message: "Could not load orders."
@@ -302,62 +358,56 @@ app.get("/api/admin/orders", requireAdmin, (req, res) => {
   });
 });
 
-// Update an order's status.
-app.patch(
-  "/api/admin/orders/:id/status",
-  requireAdmin,
-  (req, res) => {
-    const orderId = Number(req.params.id);
-    const { status } = req.body || {};
+app.patch("/api/admin/orders/:id/status", requireAdmin, (req, res) => {
+  const orderId = Number(req.params.id);
+  const { status } = req.body || {};
 
-    const allowedStatuses = [
-      "Pending",
-      "Preparing",
-      "Ready",
-      "Completed",
-      "Cancelled"
-    ];
+  const allowedStatuses = [
+    "Pending",
+    "Preparing",
+    "Ready",
+    "Completed",
+    "Cancelled"
+  ];
 
-    if (!Number.isInteger(orderId) || orderId < 1) {
-      return res.status(400).json({
-        message: "Invalid order ID."
-      });
-    }
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    return res.status(400).json({
+      message: "Invalid order ID."
+    });
+  }
 
-    if (!allowedStatuses.includes(status)) {
-      return res.status(400).json({
-        message: "Invalid order status."
-      });
-    }
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      message: "Invalid order status."
+    });
+  }
 
-    db.query(
-      "UPDATE orders SET status = ? WHERE id = ?",
-      [status, orderId],
-      (err, result) => {
-        if (err) {
-          console.error("Order status update failed:", err.message);
+  db.query(
+    "UPDATE orders SET status = ? WHERE id = ?",
+    [status, orderId],
+    (err, result) => {
+      if (err) {
+        console.error("Order status update failed:", err.code);
 
-          return res.status(500).json({
-            message: "Could not update order status."
-          });
-        }
-
-        if (result.affectedRows === 0) {
-          return res.status(404).json({
-            message: "Order not found."
-          });
-        }
-
-        return res.json({
-          success: true,
-          message: "Order status updated successfully."
+        return res.status(500).json({
+          message: "Could not update order status."
         });
       }
-    );
-  }
-);
 
-// Handle invalid JSON and other Express errors.
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          message: "Order not found."
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Order status updated successfully."
+      });
+    }
+  );
+});
+
 app.use((err, req, res, next) => {
   console.error("Request processing error:", err.message);
 
@@ -370,7 +420,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start the server.
-app.listen(PORT, () => {
-  console.log(`Smart Canteen server running at http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Smart Canteen API listening on port ${PORT}`);
 });
