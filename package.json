@@ -1,16 +1,22 @@
+
 {
   "name": "smart-canteen",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Smart Canteen online food ordering and management system",
+  "main": "backend/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node backend/server.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "smart-canteen",
+    "food-ordering",
+    "canteen-management"
+  ],
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
